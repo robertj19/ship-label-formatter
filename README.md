@@ -72,7 +72,7 @@ should be is treated as a missing field, not a separator.
 
 ## Status
 
-Early skeleton. Only single-word state names ("Texas") and two-letter
-abbreviations are recognized so far - multi-word names like "New York"
-aren't yet, and street addresses are limited to a single line. See
+Early skeleton. State names can be an abbreviation ("NY") or a full
+name, single-word ("Texas") or multi-word ("New York", "North
+Carolina"). Street addresses are still limited to a single line. See
 `shiplabel/label.py` for the current parsing rules.

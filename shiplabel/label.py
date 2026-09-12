@@ -11,12 +11,8 @@ The country line is optional and defaults to US. Blank lines around
 the block are ignored; blank lines inside it are not, since a missing
 field is exactly the kind of mistake this module exists to catch.
 
-Limitation: the city/state/zip line is split by looking for the last
-one or two whitespace-separated tokens as the state and zip, so only
-single-word state names ("Texas") and two-letter abbreviations are
-recognized. Multi-word names ("New York", "North Carolina") aren't
-yet, because they can't be told apart from a two-word city name using
-this rule alone.
+Limitation: the street address is a single line only; a second address
+line ("Apt 4B", "Suite 200") isn't recognized yet.
 """
 
 from __future__ import annotations
@@ -35,7 +31,6 @@ _STATE_ABBREVIATIONS = {
     "DC", "PR", "VI", "GU",
 }
 
-# Only the single-word full names; see the module docstring.
 _STATE_NAMES = {
     "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
     "california": "CA", "colorado": "CO", "connecticut": "CT",
@@ -44,12 +39,20 @@ _STATE_NAMES = {
     "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME",
     "maryland": "MD", "massachusetts": "MA", "michigan": "MI",
     "minnesota": "MN", "mississippi": "MS", "missouri": "MO",
-    "montana": "MT", "nebraska": "NE", "nevada": "NV", "ohio": "OH",
-    "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA",
+    "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM",
+    "new york": "NY", "north carolina": "NC", "north dakota": "ND",
+    "ohio": "OH", "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA",
+    "rhode island": "RI", "south carolina": "SC", "south dakota": "SD",
     "tennessee": "TN", "texas": "TX", "utah": "UT", "vermont": "VT",
-    "virginia": "VA", "washington": "WA", "wisconsin": "WI",
-    "wyoming": "WY",
+    "virginia": "VA", "washington": "WA", "west virginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY",
 }
+
+# The subset of _STATE_NAMES keys that are two words, used to decide how
+# many trailing tokens to treat as the state when there's no comma to
+# mark the city/state boundary.
+_TWO_WORD_STATE_NAMES = {name for name in _STATE_NAMES if " " in name}
 
 _COUNTRY_CODES = {"US", "CA", "MX", "GB", "AU", "DE", "FR", "JP"}
 
@@ -150,10 +153,31 @@ def _parse_city_state_zip(line: str, source: str, line_no: int):
     if comma_at != -1:
         city_part = line[:comma_at]
         remainder = line[comma_at + 1 :]
-        remainder_offset = comma_at + 1
+        offset = comma_at + 1
+
+        if not city_part.strip():
+            raise LabelError("city is missing", source, line_no, 1)
+        city = _collapse_whitespace(city_part).title()
+
+        remainder_tokens = list(re.finditer(r"\S+", remainder))
+        if len(remainder_tokens) < 2:
+            raise LabelError(
+                "expected a state and a zip code after the city",
+                source,
+                line_no,
+                offset + 1,
+                len(remainder.strip()) or 1,
+            )
+        # The comma already marks where the city ends, so everything
+        # between it and the zip is the state, however many words that
+        # takes ("NY", "New York", "North Carolina").
+        zip_token = remainder_tokens[-1]
+        state_tokens = remainder_tokens[:-1]
     else:
-        # No comma: assume the last two whitespace-separated tokens are
-        # the state and zip, and everything before them is the city.
+        # No comma: the last token is the zip. Check whether the two
+        # tokens before it spell a known two-word state name; if not,
+        # fall back to treating just the last one as the state. Either
+        # way, everything before that is the city.
         tokens = list(re.finditer(r"\S+", line))
         if len(tokens) < 3:
             stripped = line.strip()
@@ -165,53 +189,38 @@ def _parse_city_state_zip(line: str, source: str, line_no: int):
                 leading_ws + 1,
                 len(stripped) or 1,
             )
-        state_token = tokens[-2]
-        city_part = line[: state_token.start()]
-        remainder = line[state_token.start() :]
-        remainder_offset = state_token.start()
+        offset = 0
+        zip_token = tokens[-1]
+        state_word_count = 1
+        if len(tokens) >= 4:
+            two_words = " ".join(t.group() for t in tokens[-3:-1]).lower()
+            if two_words in _TWO_WORD_STATE_NAMES:
+                state_word_count = 2
+        state_tokens = tokens[-1 - state_word_count : -1]
+        city_tokens = tokens[: -1 - state_word_count]
 
-    if not city_part.strip():
-        raise LabelError("city is missing", source, line_no, 1)
-    city = _collapse_whitespace(city_part).title()
+        city_part = line[city_tokens[0].start() : city_tokens[-1].end()]
+        if not city_part.strip():
+            raise LabelError("city is missing", source, line_no, 1)
+        city = _collapse_whitespace(city_part).title()
 
-    remainder_tokens = list(re.finditer(r"\S+", remainder))
-    if len(remainder_tokens) < 2:
-        raise LabelError(
-            "expected a state and a zip code after the city",
-            source,
-            line_no,
-            remainder_offset + 1,
-            len(remainder.strip()) or 1,
-        )
-    if len(remainder_tokens) > 2:
-        extra = remainder_tokens[2]
-        raise LabelError(
-            "unexpected extra text after the zip code",
-            source,
-            line_no,
-            remainder_offset + extra.start() + 1,
-            len(extra.group()),
-        )
-
-    state_token, zip_token = remainder_tokens
-    state = _normalize_state(
-        state_token.group(),
-        source,
-        line_no,
-        remainder_offset + state_token.start() + 1,
-    )
+    source_text = remainder if comma_at != -1 else line
+    state_start = state_tokens[0].start()
+    state_end = state_tokens[-1].end()
+    state_text = source_text[state_start:state_end]
+    state = _normalize_state(state_text, source, line_no, offset + state_start + 1)
     zip_code = _normalize_zip(
         zip_token.group(),
         source,
         line_no,
-        remainder_offset + zip_token.start() + 1,
+        offset + zip_token.start() + 1,
     )
 
     return city, state, zip_code
 
 
 def _normalize_state(token: str, source: str, line_no: int, column: int) -> str:
-    cleaned = token.strip(",")
+    cleaned = _collapse_whitespace(token.strip(","))
     lowered = cleaned.lower()
     if lowered in _STATE_NAMES:
         return _STATE_NAMES[lowered]
@@ -219,7 +228,7 @@ def _normalize_state(token: str, source: str, line_no: int, column: int) -> str:
     if upper in _STATE_ABBREVIATIONS:
         return upper
     raise LabelError(
-        f'"{token}" is not a recognized state or territory',
+        f'"{token.strip()}" is not a recognized state or territory',
         source,
         line_no,
         column,
