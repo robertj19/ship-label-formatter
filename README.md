@@ -60,19 +60,27 @@ $ printf 'jane doe\n500 5th ave apt 12\nnew york ny 1011' | python -m shiplabel.
 
 ## Input format
 
-Four lines, one field per line:
+Three to five lines, one field per line:
 
 1. Name
 2. Street address
-3. `City, ST ZIP` (the comma is optional)
-4. Country code (optional, defaults to `US`)
+3. Second street line, e.g. "Apt 4B" or "Suite 200" (optional)
+4. `City, ST ZIP` (the comma is optional)
+5. Country code (optional, defaults to `US`)
 
 Blank lines around the block are ignored; a blank line where a field
 should be is treated as a missing field, not a separator.
+
+A 4-line label is ambiguous - it could have a second street line and
+no country, or a country and no second street line - so a guess is
+made based on the last line: a country is short with no digits or
+commas, a second street line almost always has a number in it (see
+`shiplabel/label.py` for the exact rule). Write the country
+explicitly if your second street line happens to have no digits in
+it, e.g. "Rear Unit".
 
 ## Status
 
 Early skeleton. State names can be an abbreviation ("NY") or a full
 name, single-word ("Texas") or multi-word ("New York", "North
-Carolina"). Street addresses are still limited to a single line. See
-`shiplabel/label.py` for the current parsing rules.
+Carolina"). See `shiplabel/label.py` for the current parsing rules.

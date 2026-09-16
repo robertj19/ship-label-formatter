@@ -3,16 +3,24 @@
 A label is plain text, one field per line:
 
     Jane Doe
-    500 5th Ave Apt 12
+    500 5th Ave
+    Apt 12
     New York, NY 10110
     US
 
-The country line is optional and defaults to US. Blank lines around
-the block are ignored; blank lines inside it are not, since a missing
-field is exactly the kind of mistake this module exists to catch.
+The second street line and the country line are both optional and
+independently omittable, which makes a 4-line label ambiguous: it
+could be (name, street, street2, city/state/zip) or (name, street,
+city/state/zip, country). We resolve that by looking at the last
+line - a country is short and has no digits or commas in it, while a
+second street line ("Apt 4B", "Suite 200") almost always has a
+number in it. A country-less label with a purely-alphabetic second
+street line (e.g. "Rear Unit") will be misread as having a country;
+write the country explicitly to avoid that.
 
-Limitation: the street address is a single line only; a second address
-line ("Apt 4B", "Suite 200") isn't recognized yet.
+Blank lines around the block are ignored; blank lines inside it are
+not, since a missing field is exactly the kind of mistake this module
+exists to catch.
 """
 
 from __future__ import annotations
@@ -67,16 +75,15 @@ class Label:
     state: str
     zip: str
     country: str
+    street2: str | None = None
 
     def format(self) -> str:
-        return "\n".join(
-            [
-                self.name.upper(),
-                self.street.upper(),
-                f"{self.city.upper()}, {self.state} {self.zip}",
-                self.country,
-            ]
-        )
+        lines = [self.name.upper(), self.street.upper()]
+        if self.street2:
+            lines.append(self.street2.upper())
+        lines.append(f"{self.city.upper()}, {self.state} {self.zip}")
+        lines.append(self.country)
+        return "\n".join(lines)
 
 
 def format_label(text: str) -> str:
@@ -102,35 +109,44 @@ def _normalize(text: str) -> Label:
             start + len(body) or 1,
             1,
         )
-    if len(body) > 4:
-        extra_line_no = start + 5
+    if len(body) > 5:
+        extra_line_no = start + 6
         extra_text = lines[extra_line_no - 1]
         raise LabelError(
-            "too many lines for a label (expected name, street, city/state/zip, "
-            "and an optional country)",
+            "too many lines for a label (expected name, one or two street "
+            "lines, city/state/zip, and an optional country)",
             text,
             extra_line_no,
             1,
             len(extra_text) or 1,
         )
 
+    has_country = len(body) == 5 or (
+        len(body) == 4 and _looks_like_country_line(body[-1])
+    )
+    csz_index = len(body) - 2 if has_country else len(body) - 1
+    street_lines = body[1:csz_index]
+
     name_line_no = start + 1
-    street_line_no = start + 2
-    csz_line_no = start + 3
-    country_line_no = start + 4 if len(body) == 4 else None
+    csz_line_no = start + csz_index + 1
+    country_line_no = start + len(body) if has_country else None
 
     name = _require_nonblank(body[0], text, name_line_no, "name")
-    street = _require_nonblank(body[1], text, street_line_no, "street address")
-    city, state, zip_code = _parse_city_state_zip(body[2], text, csz_line_no)
+    street_parts = [
+        _require_nonblank(line, text, start + 2 + i, "street address")
+        for i, line in enumerate(street_lines)
+    ]
+    city, state, zip_code = _parse_city_state_zip(body[csz_index], text, csz_line_no)
     country = (
-        _parse_country(body[3], text, country_line_no)
-        if country_line_no
-        else "US"
+        _parse_country(body[-1], text, country_line_no) if has_country else "US"
     )
 
     return Label(
         name=_collapse_whitespace(name),
-        street=_collapse_whitespace(street),
+        street=_collapse_whitespace(street_parts[0]),
+        street2=_collapse_whitespace(street_parts[1])
+        if len(street_parts) > 1
+        else None,
         city=city,
         state=state,
         zip=zip_code,
@@ -247,6 +263,17 @@ def _normalize_zip(token: str, source: str, line_no: int, column: int) -> str:
             len(token),
         )
     return cleaned
+
+
+def _looks_like_country_line(line: str) -> bool:
+    """Guess whether a trailing line is a country rather than a second
+    street line. See the module docstring for why this is a guess and
+    not an exact check.
+    """
+    stripped = line.strip()
+    if not stripped or "," in stripped:
+        return False
+    return not any(ch.isdigit() for ch in stripped)
 
 
 def _parse_country(line: str, source: str, line_no: int) -> str:
