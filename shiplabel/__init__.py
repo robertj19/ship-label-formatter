@@ -4,7 +4,7 @@ that needs fixing.
 """
 
 from .errors import LabelError
-from .label import Label, format_label
+from .label import Label, format_batch, format_label, parse_batch
 
-__all__ = ["Label", "LabelError", "format_label"]
+__all__ = ["Label", "LabelError", "format_batch", "format_label", "parse_batch"]
 __version__ = "0.1.0"

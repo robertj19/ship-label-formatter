@@ -91,6 +91,45 @@ def format_label(text: str) -> str:
     return _normalize(text).format()
 
 
+def parse_batch(text: str) -> list[Label]:
+    """Parse a file containing many labels, one per block of non-blank
+    lines, blocks separated by one or more blank lines.
+
+    Because blocks are delimited by blank lines, a label can't use an
+    internal blank line to signal a missing field the way a single
+    label passed to format_label() can - in batch mode that blank line
+    is a block boundary instead, so a label short a field just shows
+    up as an undersized block with its own error.
+
+    Raises on the first invalid block, with the error's line number
+    relative to the whole file, not the block.
+    """
+    return [
+        _normalize_body(body, text, first_line_no)
+        for body, first_line_no in _iter_blocks(text)
+    ]
+
+
+def format_batch(text: str) -> str:
+    """Parse and normalize a batch of labels, returning them as clean
+    text blocks separated by a blank line, in the original order.
+    """
+    return "\n\n".join(label.format() for label in parse_batch(text))
+
+
+def _iter_blocks(text: str):
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        if not lines[i].strip():
+            i += 1
+            continue
+        block_start = i
+        while i < len(lines) and lines[i].strip():
+            i += 1
+        yield lines[block_start:i], block_start + 1
+
+
 def _normalize(text: str) -> Label:
     lines = text.splitlines()
 
@@ -102,20 +141,24 @@ def _normalize(text: str) -> Label:
         end -= 1
     body = lines[start:end]
 
+    return _normalize_body(body, text, start + 1)
+
+
+def _normalize_body(body: list[str], source: str, first_line_no: int) -> Label:
     if len(body) < 3:
         raise LabelError(
             "a label needs at least a name, a street, and a city/state/zip line",
-            text,
-            start + len(body) or 1,
+            source,
+            first_line_no + len(body) - 1 or 1,
             1,
         )
     if len(body) > 5:
-        extra_line_no = start + 6
-        extra_text = lines[extra_line_no - 1]
+        extra_line_no = first_line_no + 5
+        extra_text = body[5]
         raise LabelError(
             "too many lines for a label (expected name, one or two street "
             "lines, city/state/zip, and an optional country)",
-            text,
+            source,
             extra_line_no,
             1,
             len(extra_text) or 1,
@@ -127,18 +170,18 @@ def _normalize(text: str) -> Label:
     csz_index = len(body) - 2 if has_country else len(body) - 1
     street_lines = body[1:csz_index]
 
-    name_line_no = start + 1
-    csz_line_no = start + csz_index + 1
-    country_line_no = start + len(body) if has_country else None
+    name_line_no = first_line_no
+    csz_line_no = first_line_no + csz_index
+    country_line_no = first_line_no + len(body) - 1 if has_country else None
 
-    name = _require_nonblank(body[0], text, name_line_no, "name")
+    name = _require_nonblank(body[0], source, name_line_no, "name")
     street_parts = [
-        _require_nonblank(line, text, start + 2 + i, "street address")
+        _require_nonblank(line, source, first_line_no + 1 + i, "street address")
         for i, line in enumerate(street_lines)
     ]
-    city, state, zip_code = _parse_city_state_zip(body[csz_index], text, csz_line_no)
+    city, state, zip_code = _parse_city_state_zip(body[csz_index], source, csz_line_no)
     country = (
-        _parse_country(body[-1], text, country_line_no) if has_country else "US"
+        _parse_country(body[-1], source, country_line_no) if has_country else "US"
     )
 
     return Label(

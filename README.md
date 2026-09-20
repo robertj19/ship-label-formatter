@@ -44,6 +44,32 @@ NEW YORK, NY 10110
 US
 ```
 
+## Batch mode
+
+A file with several labels in it, each one separated from the next by
+a blank line, can be normalized in one pass with `--batch`:
+
+```
+$ python -m shiplabel.cli --batch < labels.txt
+JANE DOE
+500 5TH AVE APT 12
+NEW YORK, NY 10110
+US
+
+JOHN SMITH
+1 INFINITE LOOP
+CUPERTINO, CA 95014
+US
+```
+
+The same is available as a library call, `format_batch()`, or
+`parse_batch()` if you want the `Label` objects instead of formatted
+text. Errors report the line number within the whole file. Note that
+in batch mode a blank line always separates labels - it can't also be
+used to flag a label that's missing a field the way it can when
+formatting a single label, since batch mode has no other way to tell
+where one label ends and the next begins.
+
 ## Errors point at the exact spot
 
 "Invalid label" is useless when you're fixing a batch of a few
