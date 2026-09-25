@@ -220,12 +220,20 @@ def _parse_city_state_zip(line: str, source: str, line_no: int):
 
         remainder_tokens = list(re.finditer(r"\S+", remainder))
         if len(remainder_tokens) < 2:
+            # Point at whatever's actually there (e.g. a lone state with
+            # no zip), not at the whitespace right after the comma.
+            if remainder_tokens:
+                error_start = offset + remainder_tokens[0].start()
+                error_length = remainder_tokens[0].end() - remainder_tokens[0].start()
+            else:
+                error_start = offset
+                error_length = 1
             raise LabelError(
                 "expected a state and a zip code after the city",
                 source,
                 line_no,
-                offset + 1,
-                len(remainder.strip()) or 1,
+                error_start + 1,
+                error_length,
             )
         # The comma already marks where the city ends, so everything
         # between it and the zip is the state, however many words that
