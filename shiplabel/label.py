@@ -57,14 +57,38 @@ _STATE_NAMES = {
     "wisconsin": "WI", "wyoming": "WY",
 }
 
-# The subset of _STATE_NAMES keys that are two words, used to decide how
-# many trailing tokens to treat as the state when there's no comma to
-# mark the city/state boundary.
-_TWO_WORD_STATE_NAMES = {name for name in _STATE_NAMES if " " in name}
+_PROVINCE_ABBREVIATIONS = {
+    "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK",
+    "YT",
+}
+
+_PROVINCE_NAMES = {
+    "alberta": "AB", "british columbia": "BC", "manitoba": "MB",
+    "new brunswick": "NB", "newfoundland and labrador": "NL",
+    "nova scotia": "NS", "northwest territories": "NT", "nunavut": "NU",
+    "ontario": "ON", "prince edward island": "PE", "quebec": "QC",
+    "saskatchewan": "SK", "yukon": "YT",
+}
+
+# Per-country region tables, as (abbreviations, full names). Every
+# country other than CA is still checked against the US tables, which
+# is what the parser did before Canadian addresses were supported.
+_REGIONS_US = (_STATE_ABBREVIATIONS, _STATE_NAMES)
+_REGIONS_CA = (_PROVINCE_ABBREVIATIONS, _PROVINCE_NAMES)
 
 _COUNTRY_CODES = {"US", "CA", "MX", "GB", "AU", "DE", "FR", "JP"}
 
 _ZIP_RE = re.compile(r"^\d{5}(-\d{4})?$")
+
+# Canadian postal codes alternate letter/digit, and never use D, F, I,
+# O, Q or U; W and Z are also excluded from the first position.
+_POSTAL_CA_RE = re.compile(
+    r"^[ABCEGHJKLMNPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$"
+)
+
+
+def _regions_for(country: str):
+    return _REGIONS_CA if country == "CA" else _REGIONS_US
 
 
 @dataclass
@@ -179,9 +203,13 @@ def _normalize_body(body: list[str], source: str, first_line_no: int) -> Label:
         _require_nonblank(line, source, first_line_no + 1 + i, "street address")
         for i, line in enumerate(street_lines)
     ]
-    city, state, zip_code = _parse_city_state_zip(body[csz_index], source, csz_line_no)
+    # The country is parsed first because it decides which states and
+    # postal code format the city/state/zip line is checked against.
     country = (
         _parse_country(body[-1], source, country_line_no) if has_country else "US"
+    )
+    city, state, zip_code = _parse_city_state_zip(
+        body[csz_index], source, csz_line_no, country
     )
 
     return Label(
@@ -207,7 +235,23 @@ def _collapse_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip())
 
 
-def _parse_city_state_zip(line: str, source: str, line_no: int):
+def _postal_token_count(tokens, country: str) -> int:
+    """A Canadian postal code is usually written with a space in the
+    middle ("M5V 2T6"), so it can span two whitespace-separated tokens.
+    """
+    if (
+        country == "CA"
+        and len(tokens) >= 2
+        and len(tokens[-2].group()) == 3
+        and len(tokens[-1].group()) == 3
+    ):
+        return 2
+    return 1
+
+
+def _parse_city_state_zip(line: str, source: str, line_no: int, country: str):
+    _, region_names = _regions_for(country)
+    max_name_words = max(name.count(" ") + 1 for name in region_names)
     comma_at = line.find(",")
     if comma_at != -1:
         city_part = line[:comma_at]
@@ -219,7 +263,8 @@ def _parse_city_state_zip(line: str, source: str, line_no: int):
         city = _collapse_whitespace(city_part).title()
 
         remainder_tokens = list(re.finditer(r"\S+", remainder))
-        if len(remainder_tokens) < 2:
+        zip_word_count = _postal_token_count(remainder_tokens, country)
+        if len(remainder_tokens) < zip_word_count + 1:
             # Point at whatever's actually there (e.g. a lone state with
             # no zip), not at the whitespace right after the comma.
             if remainder_tokens:
@@ -238,15 +283,16 @@ def _parse_city_state_zip(line: str, source: str, line_no: int):
         # The comma already marks where the city ends, so everything
         # between it and the zip is the state, however many words that
         # takes ("NY", "New York", "North Carolina").
-        zip_token = remainder_tokens[-1]
-        state_tokens = remainder_tokens[:-1]
+        zip_tokens = remainder_tokens[-zip_word_count:]
+        state_tokens = remainder_tokens[:-zip_word_count]
     else:
-        # No comma: the last token is the zip. Check whether the two
-        # tokens before it spell a known two-word state name; if not,
-        # fall back to treating just the last one as the state. Either
-        # way, everything before that is the city.
+        # No comma: the zip is at the end. Check whether the tokens
+        # before it spell a known multi-word state name, longest first;
+        # if not, fall back to treating just the last one as the state.
+        # Either way, everything before that is the city.
         tokens = list(re.finditer(r"\S+", line))
-        if len(tokens) < 3:
+        zip_word_count = _postal_token_count(tokens, country)
+        if len(tokens) < zip_word_count + 2:
             stripped = line.strip()
             leading_ws = len(line) - len(line.lstrip())
             raise LabelError(
@@ -257,14 +303,19 @@ def _parse_city_state_zip(line: str, source: str, line_no: int):
                 len(stripped) or 1,
             )
         offset = 0
-        zip_token = tokens[-1]
+        zip_tokens = tokens[-zip_word_count:]
+        before_zip = tokens[:-zip_word_count]
         state_word_count = 1
-        if len(tokens) >= 4:
-            two_words = " ".join(t.group() for t in tokens[-3:-1]).lower()
-            if two_words in _TWO_WORD_STATE_NAMES:
-                state_word_count = 2
-        state_tokens = tokens[-1 - state_word_count : -1]
-        city_tokens = tokens[: -1 - state_word_count]
+        for count in range(max_name_words, 1, -1):
+            # Leave at least one token over for the city.
+            if len(before_zip) < count + 1:
+                continue
+            candidate = " ".join(t.group() for t in before_zip[-count:]).lower()
+            if candidate in region_names:
+                state_word_count = count
+                break
+        state_tokens = before_zip[-state_word_count:]
+        city_tokens = before_zip[:-state_word_count]
 
         city_part = line[city_tokens[0].start() : city_tokens[-1].end()]
         if not city_part.strip():
@@ -275,27 +326,32 @@ def _parse_city_state_zip(line: str, source: str, line_no: int):
     state_start = state_tokens[0].start()
     state_end = state_tokens[-1].end()
     state_text = source_text[state_start:state_end]
-    state = _normalize_state(state_text, source, line_no, offset + state_start + 1)
+    state = _normalize_state(
+        state_text, source, line_no, offset + state_start + 1, country
+    )
+    zip_start = zip_tokens[0].start()
+    zip_text = source_text[zip_start : zip_tokens[-1].end()]
     zip_code = _normalize_zip(
-        zip_token.group(),
-        source,
-        line_no,
-        offset + zip_token.start() + 1,
+        zip_text, source, line_no, offset + zip_start + 1, country
     )
 
     return city, state, zip_code
 
 
-def _normalize_state(token: str, source: str, line_no: int, column: int) -> str:
+def _normalize_state(
+    token: str, source: str, line_no: int, column: int, country: str = "US"
+) -> str:
+    abbreviations, names = _regions_for(country)
     cleaned = _collapse_whitespace(token.strip(","))
     lowered = cleaned.lower()
-    if lowered in _STATE_NAMES:
-        return _STATE_NAMES[lowered]
+    if lowered in names:
+        return names[lowered]
     upper = cleaned.upper()
-    if upper in _STATE_ABBREVIATIONS:
+    if upper in abbreviations:
         return upper
+    kind = "province or territory" if country == "CA" else "state or territory"
     raise LabelError(
-        f'"{token.strip()}" is not a recognized state or territory',
+        f'"{token.strip()}" is not a recognized {kind}',
         source,
         line_no,
         column,
@@ -303,8 +359,21 @@ def _normalize_state(token: str, source: str, line_no: int, column: int) -> str:
     )
 
 
-def _normalize_zip(token: str, source: str, line_no: int, column: int) -> str:
+def _normalize_zip(
+    token: str, source: str, line_no: int, column: int, country: str = "US"
+) -> str:
     cleaned = token.rstrip(",.")
+    if country == "CA":
+        compact = re.sub(r"\s+", "", cleaned).upper()
+        if not _POSTAL_CA_RE.match(compact):
+            raise LabelError(
+                f'"{token}" is not a valid Canadian postal code (expected A1A 1A1)',
+                source,
+                line_no,
+                column,
+                len(token),
+            )
+        return f"{compact[:3]} {compact[3:]}"
     if not _ZIP_RE.match(cleaned):
         raise LabelError(
             f'"{token}" is not a valid US zip code (expected 12345 or 12345-6789)',

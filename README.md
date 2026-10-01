@@ -105,6 +105,25 @@ commas, a second street line almost always has a number in it (see
 explicitly if your second street line happens to have no digits in
 it, e.g. "Rear Unit".
 
+## Canadian addresses
+
+When the country line is `CA`, the region must be a province or
+territory (`ON`, or a full name like "British Columbia") and the last
+part of the line must be a postal code. The space in the middle is
+optional on input and always added on output:
+
+```
+$ printf 'jane doe\n80 queen st\ntoronto on m5v2t6\nca' | python -m shiplabel.cli
+JANE DOE
+80 QUEEN ST
+TORONTO, ON M5V 2T6
+CA
+```
+
+Without a country line the label is read as a US one, so `ON` there is
+an error. Other country codes are accepted but are still checked
+against US states and zip codes.
+
 ## Status
 
 Early skeleton. State names can be an abbreviation ("NY") or a full
